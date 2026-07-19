@@ -314,11 +314,16 @@ export async function fetchAuthenticatedGithubUser(token: string): Promise<Githu
     headers: {
       Accept: "application/vnd.github+json",
       Authorization: `Bearer ${token}`,
+      "X-GitHub-Api-Version": "2022-11-28",
     },
   });
 
   if (!response.ok) {
-    throw new Error(response.status === 401 ? "GitHub 登录已过期" : "GitHub 连接失败");
+    throw new Error(
+      response.status === 401
+        ? "GitHub 登录已过期"
+        : `GitHub 连接失败：${response.status}`,
+    );
   }
 
   const user = (await response.json()) as GithubApiUser;

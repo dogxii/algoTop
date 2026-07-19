@@ -1,5 +1,4 @@
 const GITHUB_TOKEN_URL = "https://github.com/login/oauth/access_token";
-const GITHUB_USER_URL = "https://api.github.com/user";
 
 type TokenRequestBody = {
   code?: unknown;
@@ -13,14 +12,6 @@ type GithubTokenResponse = {
   scope?: string;
   error?: string;
   error_description?: string;
-};
-
-type GithubApiUser = {
-  id: number;
-  login: string;
-  name: string | null;
-  avatar_url: string;
-  html_url: string;
 };
 
 type GithubOAuthEnv = {
@@ -94,6 +85,7 @@ export async function handleGithubOAuthRequest(
     headers: {
       Accept: "application/json",
       "Content-Type": "application/x-www-form-urlencoded",
+      "User-Agent": "AlgoTop",
     },
     body: tokenParams,
   });
@@ -109,25 +101,10 @@ export async function handleGithubOAuthRequest(
     );
   }
 
-  const userResponse = await fetch(GITHUB_USER_URL, {
-    headers: {
-      Accept: "application/vnd.github+json",
-      Authorization: `Bearer ${tokenData.access_token}`,
-      "X-GitHub-Api-Version": "2022-11-28",
-    },
-  });
-
-  if (!userResponse.ok) {
-    return jsonResponse({ error: "github_user_fetch_failed" }, 400);
-  }
-
-  const user = (await userResponse.json()) as GithubApiUser;
-
   return jsonResponse({
     access_token: tokenData.access_token,
     token_type: tokenData.token_type,
     scope: tokenData.scope,
-    user,
   });
 }
 
