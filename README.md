@@ -86,6 +86,14 @@ GITHUB_CLIENT_SECRET=your_oauth_client_secret
 
 `GITHUB_CLIENT_SECRET` 只配置在部署平台的服务端环境变量中。
 
+Cloudflare Pages 需要在项目环境变量中配置：
+
+- `VITE_GITHUB_CLIENT_ID`
+- `GITHUB_CLIENT_ID`
+- `GITHUB_CLIENT_SECRET`
+
+项目已包含 Pages Functions：`/functions/api/github/oauth.ts`。
+
 ## License
 
 [MIT](LICENSE) © 2026 Dogxi

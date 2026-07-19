@@ -23,12 +23,17 @@ type GithubApiUser = {
   html_url: string;
 };
 
+type GithubOAuthEnv = {
+  GITHUB_CLIENT_ID?: string;
+  GITHUB_CLIENT_SECRET?: string;
+};
+
 export const config = {
   runtime: "edge",
 };
 
-function readEnv(name: string) {
-  return process.env[name] ?? "";
+function readEnv(env: GithubOAuthEnv | undefined, name: keyof GithubOAuthEnv) {
+  return env?.[name] ?? process.env[name] ?? "";
 }
 
 function jsonResponse(body: unknown, status = 200) {
@@ -52,13 +57,16 @@ async function readJsonBody(request: Request) {
   }
 }
 
-export async function handleGithubOAuthRequest(request: Request) {
+export async function handleGithubOAuthRequest(
+  request: Request,
+  env?: GithubOAuthEnv,
+) {
   if (request.method !== "POST") {
     return jsonResponse({ error: "method_not_allowed" }, 405);
   }
 
-  const clientId = readEnv("GITHUB_CLIENT_ID");
-  const clientSecret = readEnv("GITHUB_CLIENT_SECRET");
+  const clientId = readEnv(env, "GITHUB_CLIENT_ID");
+  const clientSecret = readEnv(env, "GITHUB_CLIENT_SECRET");
 
   if (!clientId || !clientSecret) {
     return jsonResponse({ error: "github_oauth_not_configured" }, 500);

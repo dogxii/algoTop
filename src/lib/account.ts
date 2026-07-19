@@ -43,6 +43,8 @@ type GithubAuthSession = {
 type TokenExchangeResponse = {
   access_token?: string;
   accessToken?: string;
+  error?: string;
+  message?: string;
   user?: GithubApiUser;
 };
 
@@ -206,6 +208,14 @@ async function sha256Base64Url(value: string) {
   return base64Url(digest);
 }
 
+async function readTokenExchangeResponse(response: Response) {
+  try {
+    return (await response.json()) as TokenExchangeResponse;
+  } catch {
+    return {} satisfies TokenExchangeResponse;
+  }
+}
+
 export async function startGithubOAuthLogin(config: GithubOAuthConfig) {
   const state = randomToken(24);
   const codeVerifier = randomToken(48);
@@ -281,11 +291,15 @@ export async function completeGithubOAuthLogin(config: GithubOAuthConfig) {
     }),
   });
 
+  const data = await readTokenExchangeResponse(response);
+
   if (!response.ok) {
-    throw new Error("GitHub OAuth 换取 Token 失败");
+    const detail = data.message || data.error;
+    throw new Error(
+      detail ? `GitHub OAuth 换取 Token 失败：${detail}` : "GitHub OAuth 换取 Token 失败",
+    );
   }
 
-  const data = (await response.json()) as TokenExchangeResponse;
   const token = data.access_token ?? data.accessToken;
   if (!token) throw new Error("GitHub OAuth 没有返回 Token");
 
