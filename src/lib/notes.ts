@@ -90,6 +90,40 @@ export function makeNoteMarkdown(question: Question, note: QuestionNote) {
   return lines.join("\n");
 }
 
+function makeDetachedNoteMarkdown(id: string | undefined, note: QuestionNote) {
+  const content = note.content.trim();
+  if (/^#{1,6}\s/.test(content)) return `${content}\n`;
+
+  return [`# 题目 ${id || ""}`.trim(), "", content, ""].join("\n");
+}
+
+export function makeAllNotesMarkdown(
+  items: Array<{ question?: Question; note: QuestionNote; id?: string }>,
+) {
+  const lines = [
+    "# AlgoTop Notes",
+    "",
+    `导出时间：${new Date().toLocaleString("zh-CN")}`,
+    `笔记数量：${items.length}`,
+    "",
+  ];
+
+  items.forEach(({ id, question, note }, index) => {
+    if (index > 0) {
+      lines.push("", "---", "");
+    }
+
+    lines.push(
+      (question
+        ? makeNoteMarkdown(question, note)
+        : makeDetachedNoteMarkdown(id, note)
+      ).trim(),
+    );
+  });
+
+  return `${lines.join("\n")}\n`;
+}
+
 export function makeNoteFilename(question: Question) {
   const rawName = `${question.displayId}-${question.slug || question.title}`;
   const safeName = rawName

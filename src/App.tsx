@@ -10,14 +10,10 @@ import {
   ArrowUp,
   ChevronLeft,
   ChevronRight,
-  Github,
-  Moon,
-  PlusCircle,
   RotateCcw,
   RotateCw,
   Search,
   Star,
-  Sun,
   X,
 } from 'lucide-react'
 import {
@@ -28,8 +24,27 @@ import {
   useMemo,
   useState,
 } from 'react'
+import { AccountMenu } from './components/AccountMenu'
+import { LoginDialog } from './components/LoginDialog'
+import { NoteListDialog } from './components/NoteListDialog'
+import { ProfileDialog } from './components/ProfileDialog'
 import { useAlgoTopQuery } from './hooks/useAlgoTopQuery'
 import { useDebouncedValue } from './hooks/useDebouncedValue'
+import {
+  clearGithubOAuthCallbackUrl,
+  completeGithubOAuthLogin,
+  DEFAULT_LOCAL_PROFILE,
+  getGithubOAuthConfig,
+  readStoredLocalProfile,
+  readStoredGithubToken,
+  readStoredGithubUser,
+  startGithubOAuthLogin,
+  type GithubUser,
+  type LocalProfile,
+  writeStoredLocalProfile,
+  writeStoredGithubToken,
+  writeStoredGithubUser,
+} from './lib/account'
 import {
   buildQuestionUrl,
   type CompletionFilter,
@@ -39,15 +54,27 @@ import {
   fetchDepartments,
   fetchJobs,
   fetchQuestions,
+  fetchQuestionsByIds,
   fetchTags,
   type MasteryRating,
   type Question,
   type StatusFilter,
   type UserProgress,
 } from './lib/algotop'
+import { downloadTextFile, formatDateStamp } from './lib/export'
+import {
+  createSyncPayload,
+  pullAlgoTopGist,
+  pushAlgoTopGist,
+  readStoredGistSyncMeta,
+  type AlgoTopSyncPayload,
+  type GistSyncMeta,
+  writeStoredGistSyncMeta,
+} from './lib/gistSync'
 import {
   hasQuestionNote,
   isDefaultNoteContent,
+  makeAllNotesMarkdown,
   makeDefaultNoteContent,
   makeNoteFilename,
   makeNoteMarkdown,
@@ -61,6 +88,7 @@ const EMPTY_QUESTIONS: Question[] = []
 const PROGRESS_STORAGE_KEY = 'algotop:user-progress:v1'
 const THEME_STORAGE_KEY = 'algotop:theme'
 const FILTER_STORAGE_KEY = 'algotop:filters:v1'
+const ACTIVITY_DAY_COUNT = 112
 const NoteEditorDialog = lazy(() =>
   import('./components/NoteEditorDialog').then((module) => ({
     default: module.NoteEditorDialog,
@@ -114,6 +142,167 @@ type PersistedFilters = Pick<
 >
 type Theme = 'light' | 'dark'
 type ThemePreference = Theme | 'system'
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+}
+
+function normalizeImportedLocalProfile(value: unknown): LocalProfile | undefined {
+  if (!isRecord(value)) return undefined
+
+  return {
+    name: typeof value.name === 'string' ? value.name : DEFAULT_LOCAL_PROFILE.name,
+    avatarUrl: typeof value.avatarUrl === 'string' ? value.avatarUrl : '',
+    updatedAt: typeof value.updatedAt === 'string' ? value.updatedAt : undefined,
+  }
+}
+
+function normalizeImportedFilters(value: unknown): Filters {
+  if (!isRecord(value)) return initialFilters
+
+  const status =
+    value.status === 'unrated' ||
+    value.status === 'rating-1' ||
+    value.status === 'rating-2' ||
+    value.status === 'rating-3'
+      ? value.status
+      : ''
+  const completion =
+    value.completion === 'done' || value.completion === 'todo'
+      ? value.completion
+      : ''
+  const level =
+    value.level === '1' || value.level === '2' || value.level === '3'
+      ? value.level
+      : ''
+  const ordering =
+    typeof value.ordering === 'string' && ORDERING_LABELS[value.ordering]
+      ? value.ordering
+      : initialFilters.ordering
+
+  return {
+    ...initialFilters,
+    company: typeof value.company === 'string' ? value.company : '',
+    department: typeof value.department === 'string' ? value.department : '',
+    job: typeof value.job === 'string' ? value.job : '',
+    level,
+    tag: typeof value.tag === 'string' ? value.tag : '',
+    completion,
+    status,
+    ordering,
+    page: 1,
+    search: typeof value.search === 'string' ? value.search : '',
+  }
+}
+
+function normalizeImportedProgress(value: unknown): UserProgress {
+  if (!isRecord(value)) return {}
+
+  return Object.entries(value).reduce<UserProgress>((items, [id, rawItem]) => {
+    if (!isRecord(rawItem)) return items
+
+    const mastery =
+      rawItem.mastery === 1 || rawItem.mastery === 2 || rawItem.mastery === 3
+        ? rawItem.mastery
+        : undefined
+    const done = rawItem.done === true
+    if (!done && !mastery) return items
+
+    items[id] = {
+      ...(done ? { done } : {}),
+      ...(mastery ? { mastery } : {}),
+      ...(typeof rawItem.updatedAt === 'string'
+        ? { updatedAt: rawItem.updatedAt }
+        : {}),
+    }
+
+    return items
+  }, {})
+}
+
+function normalizeImportedNotes(
+  value: unknown,
+  fallbackUpdatedAt: string,
+): UserNotes {
+  if (!isRecord(value)) return {}
+
+  return Object.entries(value).reduce<UserNotes>((items, [id, rawNote]) => {
+    if (!isRecord(rawNote) || typeof rawNote.content !== 'string') return items
+
+    const content = rawNote.content.trim()
+    if (!content) return items
+
+    items[id] = {
+      content: rawNote.content,
+      updatedAt:
+        typeof rawNote.updatedAt === 'string'
+          ? rawNote.updatedAt
+          : fallbackUpdatedAt,
+    }
+
+    return items
+  }, {})
+}
+
+function normalizeThemePreference(value: unknown): ThemePreference {
+  return value === 'light' || value === 'dark' || value === 'system'
+    ? value
+    : 'system'
+}
+
+function normalizeSyncPayload(value: unknown): AlgoTopSyncPayload {
+  if (!isRecord(value)) throw new Error('导入失败')
+
+  const preferences = isRecord(value.preferences) ? value.preferences : {}
+  const exportedAt =
+    typeof value.exportedAt === 'string'
+      ? value.exportedAt
+      : new Date().toISOString()
+
+  return {
+    schemaVersion: 1,
+    app: 'AlgoTop',
+    exportedAt,
+    user: undefined,
+    localProfile: normalizeImportedLocalProfile(value.localProfile),
+    progress: normalizeImportedProgress(value.progress),
+    notes: normalizeImportedNotes(value.notes, exportedAt),
+    preferences: {
+      filters: normalizeImportedFilters(preferences.filters),
+      theme: normalizeThemePreference(preferences.theme),
+    },
+  }
+}
+
+function compareUserPayload(payload: AlgoTopSyncPayload) {
+  const sortRecord = <T,>(record: Record<string, T> = {}) =>
+    Object.fromEntries(
+      Object.entries(record).sort(([left], [right]) => left.localeCompare(right)),
+    )
+  const profile = payload.localProfile ?? DEFAULT_LOCAL_PROFILE
+
+  return JSON.stringify({
+    progress: sortRecord(payload.progress),
+    notes: sortRecord(payload.notes),
+    localProfile: {
+      name: profile.name,
+      avatarUrl: profile.avatarUrl,
+    },
+  })
+}
+
+function hasUserPayloadData(payload: AlgoTopSyncPayload) {
+  const profile = payload.localProfile
+
+  return (
+    Object.keys(payload.progress ?? {}).length > 0 ||
+    Object.keys(payload.notes ?? {}).length > 0 ||
+    Boolean(
+      profile &&
+        (profile.name !== DEFAULT_LOCAL_PROFILE.name || profile.avatarUrl),
+    )
+  )
+}
 
 function hasUrlFilterParams(params: URLSearchParams) {
   return [
@@ -268,24 +457,69 @@ function readStoredProgress(): UserProgress {
 
     const parsed = JSON.parse(raw) as Record<
       string,
-      { mastery?: number; done?: boolean }
+      { mastery?: number; done?: boolean; updatedAt?: unknown }
     >
     return Object.entries(parsed).reduce<UserProgress>((items, [id, item]) => {
       const mastery = item.mastery ?? 0
       const done = Boolean(item.done)
+      const next: UserProgress[string] = {}
 
       if (mastery === 1 || mastery === 2 || mastery === 3) {
-        items[id] = { mastery }
+        next.mastery = mastery
       }
       if (done) {
-        items[id] = { ...(items[id] ?? {}), done }
+        next.done = done
       }
+      if (!next.done && !next.mastery) return items
+
+      if (typeof item.updatedAt === 'string') {
+        next.updatedAt = item.updatedAt
+      }
+
+      items[id] = next
 
       return items
     }, {})
   } catch {
     return {}
   }
+}
+
+function formatDateKey(date: Date) {
+  const year = date.getFullYear()
+  const month = `${date.getMonth() + 1}`.padStart(2, '0')
+  const day = `${date.getDate()}`.padStart(2, '0')
+
+  return `${year}-${month}-${day}`
+}
+
+function buildActivityDays(progress: UserProgress, notes: UserNotes) {
+  const today = new Date()
+  today.setHours(0, 0, 0, 0)
+
+  const counts = new Map<string, number>()
+  for (let index = ACTIVITY_DAY_COUNT - 1; index >= 0; index -= 1) {
+    const day = new Date(today)
+    day.setDate(today.getDate() - index)
+    counts.set(formatDateKey(day), 0)
+  }
+
+  const addActivity = (value?: string) => {
+    if (!value) return
+
+    const date = new Date(value)
+    if (Number.isNaN(date.getTime())) return
+
+    const key = formatDateKey(date)
+    if (!counts.has(key)) return
+
+    counts.set(key, (counts.get(key) ?? 0) + 1)
+  }
+
+  Object.values(progress).forEach((item) => addActivity(item.updatedAt))
+  Object.values(notes).forEach((note) => addActivity(note.updatedAt))
+
+  return Array.from(counts, ([date, count]) => ({ date, count }))
 }
 
 function getSystemTheme(): Theme {
@@ -367,16 +601,35 @@ export function App() {
     readStoredProgress(),
   )
   const [notes, setNotes] = useState<UserNotes>(() => readStoredNotes())
+  const [localProfile, setLocalProfile] = useState<LocalProfile>(() =>
+    readStoredLocalProfile(),
+  )
+  const [githubUser, setGithubUser] = useState<GithubUser | null>(() =>
+    readStoredGithubUser(),
+  )
+  const [githubToken, setGithubToken] = useState(() => readStoredGithubToken())
+  const [gistSyncMeta, setGistSyncMeta] = useState<GistSyncMeta>(() =>
+    readStoredGistSyncMeta(),
+  )
   const [themePreference, setThemePreference] = useState<ThemePreference>(() =>
     readInitialThemePreference(),
   )
   const [systemTheme, setSystemTheme] = useState<Theme>(() => getSystemTheme())
-  const [isAddDialogOpen, setIsAddDialogOpen] = useState(false)
+  const [isLoginDialogOpen, setIsLoginDialogOpen] = useState(false)
+  const [isProfileDialogOpen, setIsProfileDialogOpen] = useState(false)
+  const [isNoteListOpen, setIsNoteListOpen] = useState(false)
+  const [githubLoginError, setGithubLoginError] = useState('')
+  const [isGithubLoginLoading, setIsGithubLoginLoading] = useState(false)
+  const [syncMessage, setSyncMessage] = useState(
+    gistSyncMeta.lastSyncedAt ? '已连接 Gist' : '',
+  )
+  const [isGistSyncing, setIsGistSyncing] = useState(false)
   const [activeNoteQuestion, setActiveNoteQuestion] = useState<Question | null>(
     null,
   )
   const [activeNoteDraft, setActiveNoteDraft] = useState('')
   const theme = themePreference === 'system' ? systemTheme : themePreference
+  const githubOAuthConfig = useMemo(() => getGithubOAuthConfig(), [])
   const debouncedSearch = useDebouncedValue(filters.search, 350)
   const progressKey = useMemo(() => JSON.stringify(progress), [progress])
   const queryFilters = useMemo(
@@ -407,12 +660,68 @@ export function App() {
   }, [])
 
   useEffect(() => {
+    const callback = new URLSearchParams(window.location.search)
+    if (!callback.has('code') && !callback.has('error')) return
+
+    if (!githubOAuthConfig) {
+      setGithubLoginError('GitHub OAuth 登录未配置')
+      setIsLoginDialogOpen(true)
+      clearGithubOAuthCallbackUrl()
+      return
+    }
+
+    let isMounted = true
+    setIsGithubLoginLoading(true)
+    setGithubLoginError('')
+
+    completeGithubOAuthLogin(githubOAuthConfig)
+      .then((result) => {
+        if (!isMounted || !result) return
+        setGithubUser(result.user)
+        setGithubToken(result.token)
+        setIsLoginDialogOpen(false)
+        setIsProfileDialogOpen(true)
+        setSyncMessage('可同步 Gist')
+      })
+      .catch((error) => {
+        if (!isMounted) return
+        setGithubLoginError(error instanceof Error ? error.message : 'GitHub 登录失败')
+        setIsLoginDialogOpen(true)
+      })
+      .finally(() => {
+        if (!isMounted) return
+        setIsGithubLoginLoading(false)
+        clearGithubOAuthCallbackUrl()
+      })
+
+    return () => {
+      isMounted = false
+    }
+  }, [githubOAuthConfig])
+
+  useEffect(() => {
     window.localStorage.setItem(PROGRESS_STORAGE_KEY, JSON.stringify(progress))
   }, [progress])
 
   useEffect(() => {
     writeStoredNotes(notes)
   }, [notes])
+
+  useEffect(() => {
+    writeStoredLocalProfile(localProfile)
+  }, [localProfile])
+
+  useEffect(() => {
+    writeStoredGithubUser(githubUser)
+  }, [githubUser])
+
+  useEffect(() => {
+    writeStoredGithubToken(githubToken)
+  }, [githubToken])
+
+  useEffect(() => {
+    writeStoredGistSyncMeta(gistSyncMeta)
+  }, [gistSyncMeta])
 
   useEffect(() => {
     syncFiltersToUrl(filters)
@@ -423,11 +732,20 @@ export function App() {
   }, [filters])
 
   useEffect(() => {
-    if (!isAddDialogOpen && !activeNoteQuestion) return
+    if (
+      !isLoginDialogOpen &&
+      !isProfileDialogOpen &&
+      !isNoteListOpen &&
+      !activeNoteQuestion
+    ) {
+      return
+    }
 
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
-        setIsAddDialogOpen(false)
+        setIsLoginDialogOpen(false)
+        setIsProfileDialogOpen(false)
+        setIsNoteListOpen(false)
         setActiveNoteQuestion(null)
         setActiveNoteDraft('')
       }
@@ -435,7 +753,7 @@ export function App() {
 
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [activeNoteQuestion, isAddDialogOpen])
+  }, [activeNoteQuestion, isLoginDialogOpen, isNoteListOpen, isProfileDialogOpen])
 
   const questionsQuery = useAlgoTopQuery({
     queryKey: ['questions', queryFilters, progressKey],
@@ -452,13 +770,57 @@ export function App() {
   })
   const jobsQuery = useAlgoTopQuery({ queryKey: ['jobs'], queryFn: fetchJobs })
   const tagsQuery = useAlgoTopQuery({ queryKey: ['tags'], queryFn: fetchTags })
+  const noteIds = useMemo(
+    () =>
+      Object.entries(notes)
+        .filter(([, note]) => hasQuestionNote(note))
+        .map(([id]) => id)
+        .sort((a, b) => Number(a) - Number(b)),
+    [notes],
+  )
+  const noteQuestionsQuery = useAlgoTopQuery({
+    queryKey: ['note-questions', noteIds.join(','), progressKey],
+    queryFn: () => fetchQuestionsByIds(noteIds, progress),
+  })
 
   const companies = companiesQuery.data ?? []
   const jobs = jobsQuery.data ?? []
   const tags = tagsQuery.data ?? []
   const questions = questionsQuery.data?.items ?? EMPTY_QUESTIONS
+  const noteQuestions = noteQuestionsQuery.data ?? EMPTY_QUESTIONS
   const total = questionsQuery.data?.count ?? 0
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE))
+  const noteQuestionMap = useMemo(
+    () => new Map(noteQuestions.map((question) => [String(question.id), question])),
+    [noteQuestions],
+  )
+  const noteEntries = useMemo(
+    () =>
+      Object.entries(notes)
+        .filter(([, note]) => hasQuestionNote(note))
+        .map(([id, note]) => ({
+          id,
+          note,
+          question: noteQuestionMap.get(id),
+        }))
+        .sort(
+          (a, b) =>
+            new Date(b.note.updatedAt).getTime() - new Date(a.note.updatedAt).getTime(),
+        ),
+    [noteQuestionMap, notes],
+  )
+  const progressStats = useMemo(() => {
+    const items = Object.values(progress)
+    const doneCount = items.filter((item) => item.done).length
+
+    return {
+      doneCount,
+    }
+  }, [progress])
+  const activityDays = useMemo(
+    () => buildActivityDays(progress, notes),
+    [notes, progress],
+  )
   const departments = useMemo(() => {
     if (!filters.company) return []
     const items = departmentsQuery.data ?? []
@@ -473,6 +835,9 @@ export function App() {
         const key = String(id)
         const next = { ...current }
         const item = { ...(next[key] ?? {}) }
+        const previousMastery = item.mastery ?? 0
+
+        if (previousMastery === mastery) return current
 
         if (mastery === 0) {
           delete item.mastery
@@ -483,6 +848,7 @@ export function App() {
         if (!item.done && !item.mastery) {
           delete next[key]
         } else {
+          item.updatedAt = new Date().toISOString()
           next[key] = item
         }
 
@@ -497,6 +863,8 @@ export function App() {
       const next = { ...current }
       const item = { ...(next[key] ?? {}) }
 
+      if (Boolean(item.done) === done) return current
+
       if (done) {
         item.done = true
       } else {
@@ -506,6 +874,7 @@ export function App() {
       if (!item.done && !item.mastery) {
         delete next[key]
       } else {
+        item.updatedAt = new Date().toISOString()
         next[key] = item
       }
 
@@ -568,6 +937,180 @@ export function App() {
     },
     [notes],
   )
+  const beginGithubLogin = useCallback(async () => {
+    if (!githubOAuthConfig) {
+      setGithubLoginError('GitHub OAuth 登录未配置')
+      setIsLoginDialogOpen(true)
+      return
+    }
+
+    setIsGithubLoginLoading(true)
+    setGithubLoginError('')
+
+    try {
+      await startGithubOAuthLogin(githubOAuthConfig)
+    } catch (error) {
+      setGithubLoginError(error instanceof Error ? error.message : 'GitHub 登录失败')
+      setIsLoginDialogOpen(true)
+      setIsGithubLoginLoading(false)
+    }
+  }, [githubOAuthConfig])
+  const logoutGithub = useCallback(() => {
+    setGithubUser(null)
+    setGithubToken('')
+    setGistSyncMeta({})
+    setIsProfileDialogOpen(false)
+    setSyncMessage('')
+  }, [])
+  const updateLocalProfile = useCallback((profile: LocalProfile) => {
+    setLocalProfile({
+      name: profile.name,
+      avatarUrl: profile.avatarUrl,
+      updatedAt: new Date().toISOString(),
+    })
+  }, [])
+  const exportAllNotes = useCallback(() => {
+    const items = noteEntries.map(({ id, question, note }) => ({
+      id,
+      question,
+      note,
+    }))
+
+    if (items.length === 0) return
+
+    downloadTextFile(
+      `algotop-notes-${formatDateStamp()}.md`,
+      makeAllNotesMarkdown(items),
+      'text/markdown;charset=utf-8',
+    )
+  }, [noteEntries])
+  const exportLocalBackup = useCallback(() => {
+    const payload = createSyncPayload({
+      user: githubUser,
+      progress,
+      notes,
+      filters,
+      theme: themePreference,
+      localProfile,
+    })
+
+    downloadTextFile(
+      `algotop-backup-${formatDateStamp()}.json`,
+      JSON.stringify(payload, null, 2),
+      'application/json;charset=utf-8',
+    )
+  }, [filters, githubUser, localProfile, notes, progress, themePreference])
+  const applyExternalPayload = useCallback(
+    (rawPayload: unknown) => {
+      const payload = normalizeSyncPayload(rawPayload)
+      const currentPayload = createSyncPayload({
+        user: githubUser,
+        progress,
+        notes,
+        filters,
+        theme: themePreference,
+        localProfile,
+      })
+      const comparablePayload = {
+        ...payload,
+        localProfile: payload.localProfile ?? currentPayload.localProfile,
+      }
+      const hasConflict =
+        hasUserPayloadData(currentPayload) &&
+        compareUserPayload(currentPayload) !== compareUserPayload(comparablePayload)
+
+      if (hasConflict && !window.confirm('覆盖当前进度和笔记？')) {
+        setSyncMessage('已取消')
+        return false
+      }
+
+      setProgress(payload.progress ?? {})
+      setNotes(payload.notes ?? {})
+      if (payload.localProfile) {
+        setLocalProfile(payload.localProfile)
+      }
+      setFilters(payload.preferences?.filters ?? initialFilters)
+      setThemePreference(normalizeThemePreference(payload.preferences?.theme))
+
+      return true
+    },
+    [filters, githubUser, localProfile, notes, progress, themePreference],
+  )
+  const importLocalBackup = useCallback(
+    async (file: File) => {
+      try {
+        if (applyExternalPayload(JSON.parse(await file.text()))) {
+          setSyncMessage('已导入')
+        }
+      } catch {
+        setSyncMessage('导入失败')
+      }
+    },
+    [applyExternalPayload],
+  )
+  const pushGistSync = useCallback(async () => {
+    if (!githubToken) {
+      setIsProfileDialogOpen(false)
+      setIsLoginDialogOpen(true)
+      return
+    }
+
+    setIsGistSyncing(true)
+    setSyncMessage('上传中')
+
+    try {
+      const nextMeta = await pushAlgoTopGist({
+        token: githubToken,
+        gistId: gistSyncMeta.gistId,
+        payload: createSyncPayload({
+          user: githubUser,
+          progress,
+          notes,
+          filters,
+          theme: themePreference,
+          localProfile,
+        }),
+      })
+
+      setGistSyncMeta(nextMeta)
+      setSyncMessage('已上传到 Gist')
+    } catch (error) {
+      setSyncMessage(error instanceof Error ? error.message : '上传失败')
+    } finally {
+      setIsGistSyncing(false)
+    }
+  }, [
+    filters,
+    gistSyncMeta.gistId,
+    githubToken,
+    githubUser,
+    localProfile,
+    notes,
+    progress,
+    themePreference,
+  ])
+  const pullGistSync = useCallback(async () => {
+    if (!githubToken) {
+      setIsProfileDialogOpen(false)
+      setIsLoginDialogOpen(true)
+      return
+    }
+
+    setIsGistSyncing(true)
+    setSyncMessage('拉取中')
+
+    try {
+      const { payload, meta } = await pullAlgoTopGist(githubToken, gistSyncMeta.gistId)
+      if (applyExternalPayload(payload)) {
+        setGistSyncMeta(meta)
+        setSyncMessage('已拉取')
+      }
+    } catch (error) {
+      setSyncMessage(error instanceof Error ? error.message : '拉取失败')
+    } finally {
+      setIsGistSyncing(false)
+    }
+  }, [applyExternalPayload, gistSyncMeta.gistId, githubToken])
 
   const columns = useMemo<ColumnDef<Question>[]>(
     () => [
@@ -776,40 +1319,24 @@ export function App() {
           AlgoTop
         </a>
         <nav aria-label='主导航'>
-          <button
-            className='source-link'
-            type='button'
-            onClick={() => setIsAddDialogOpen(true)}
-            aria-label='添加题目'
-            title='添加题目'
-          >
-            <PlusCircle size={17} strokeWidth={1.8} />
-          </button>
-          <button
-            className='source-link'
-            type='button'
-            onClick={() =>
-              setThemePreference(theme === 'dark' ? 'light' : 'dark')
-            }
-            aria-label={theme === 'dark' ? '浅色模式' : '暗色模式'}
-            title={theme === 'dark' ? '浅色模式' : '暗色模式'}
-          >
-            {theme === 'dark' ? (
-              <Sun size={17} strokeWidth={1.8} />
-            ) : (
-              <Moon size={17} strokeWidth={1.8} />
-            )}
-          </button>
-          <a
-            className='source-link'
-            href='https://github.com/dogxii/algoTop'
-            target='_blank'
-            rel='noreferrer'
-            aria-label='GitHub'
-            title='GitHub'
-          >
-            <Github size={17} strokeWidth={1.8} />
-          </a>
+          <AccountMenu
+            user={githubUser}
+            localProfile={localProfile}
+            noteCount={noteEntries.length}
+            syncMessage={syncMessage}
+            isSyncing={isGistSyncing}
+            themePreference={themePreference}
+            onThemeChange={setThemePreference}
+            onOpenProfile={() => setIsProfileDialogOpen(true)}
+            onOpenNotes={() => setIsNoteListOpen(true)}
+            onLogin={() => {
+              setGithubLoginError('')
+              setIsLoginDialogOpen(true)
+            }}
+            onLogout={logoutGithub}
+            onPushSync={pushGistSync}
+            onPullSync={pullGistSync}
+          />
         </nav>
       </header>
 
@@ -1100,55 +1627,53 @@ export function App() {
         </div>
       </section>
 
-      {isAddDialogOpen && (
-        <div
-          className='modal-backdrop'
-          onMouseDown={(event) => {
-            if (event.target === event.currentTarget) {
-              setIsAddDialogOpen(false)
-            }
+      {isLoginDialogOpen && (
+        <LoginDialog
+          error={githubLoginError}
+          isConfigured={Boolean(githubOAuthConfig)}
+          isLoading={isGithubLoginLoading}
+          onClose={() => setIsLoginDialogOpen(false)}
+          onLogin={beginGithubLogin}
+        />
+      )}
+
+      {isProfileDialogOpen && (
+        <ProfileDialog
+          user={githubUser}
+          localProfile={localProfile}
+          stats={progressStats}
+          noteCount={noteEntries.length}
+          activityDays={activityDays}
+          gistUrl={gistSyncMeta.gistUrl}
+          lastSyncedAt={gistSyncMeta.lastSyncedAt}
+          syncMessage={syncMessage}
+          isSyncing={isGistSyncing}
+          onClose={() => setIsProfileDialogOpen(false)}
+          onLogin={() => {
+            setGithubLoginError('')
+            setIsProfileDialogOpen(false)
+            setIsLoginDialogOpen(true)
           }}
-        >
-          <section
-            className='add-dialog'
-            role='dialog'
-            aria-modal='true'
-            aria-labelledby='add-dialog-title'
-          >
-            <button
-              className='icon-button dialog-close'
-              type='button'
-              onClick={() => setIsAddDialogOpen(false)}
-              aria-label='关闭'
-              title='关闭'
-            >
-              <X size={15} strokeWidth={1.8} />
-            </button>
-            <p id='add-dialog-title'>暂时没有做添加功能。</p>
-            <p className='add-dialog-note'>
-              项目火热开发中，后续将支持账号同步、笔记一键导出等更多功能，欢迎
-              Star GitHub 仓库 qwq！
-            </p>
-            <div className='dialog-links'>
-              <a
-                className='dialog-link'
-                href='https://github.com/dogxii/algoTop'
-                target='_blank'
-                rel='noreferrer'
-              >
-                GitHub
-              </a>
-              <a
-                className='dialog-link'
-                href='https://dogxi.me'
-                target='_blank'
-                rel='noreferrer'
-              >
-                Dogxi 主页
-              </a>
-            </div>
-          </section>
-        </div>
+          onLogout={logoutGithub}
+          onLocalProfileChange={updateLocalProfile}
+          onExportNotes={exportAllNotes}
+          onExportBackup={exportLocalBackup}
+          onImportBackup={importLocalBackup}
+          onPushSync={pushGistSync}
+          onPullSync={pullGistSync}
+        />
+      )}
+
+      {isNoteListOpen && (
+        <NoteListDialog
+          notes={noteEntries}
+          onClose={() => setIsNoteListOpen(false)}
+          onExportNotes={exportAllNotes}
+          onOpenNote={(question) => {
+            setIsNoteListOpen(false)
+            openQuestionNote(question)
+          }}
+        />
       )}
 
       {activeNoteQuestion && (

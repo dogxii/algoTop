@@ -68,6 +68,24 @@ bun run lint
 - 笔记内容
 - 筛选偏好
 
+## GitHub 同步
+
+```bash
+cp .env.example .env.local
+```
+
+使用 GitHub OAuth App 登录，授权 `gist` scope 后同步到你的 Gist。
+
+```bash
+VITE_GITHUB_CLIENT_ID=your_oauth_client_id
+VITE_GITHUB_TOKEN_ENDPOINT=/api/github/oauth
+
+GITHUB_CLIENT_ID=your_oauth_client_id
+GITHUB_CLIENT_SECRET=your_oauth_client_secret
+```
+
+`GITHUB_CLIENT_SECRET` 只配置在部署平台的服务端环境变量中。
+
 ## License
 
 [MIT](LICENSE) © 2026 Dogxi

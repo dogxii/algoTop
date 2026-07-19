@@ -19,9 +19,7 @@ export type Filters = {
 type QuestionEntity = {
   id: number;
   displayId: string;
-  questionId: number;
   title: string;
-  content: string | null;
   level: Difficulty;
   slug: string;
   expandedLink: boolean;
@@ -31,13 +29,11 @@ type RankingItem = {
   questionId: number;
   frequency: number;
   time: string;
-  commentCount: number;
 };
 
 type LocalAlgoTopData = {
   generatedAt: string;
   source: {
-    baseUrl: string;
     pageSize: number;
   };
   taxonomies: {
@@ -54,20 +50,10 @@ type LocalAlgoTopData = {
     jobs: Record<string, RankingItem[]>;
     tags: Record<string, RankingItem[]>;
   };
-  stats: {
-    questionCount: number;
-    overallCount: number;
-    companyCount: number;
-    departmentCount: number;
-    jobCount: number;
-    tagCount: number;
-    failures: Array<{ scope: string; id: number | string; message: string }>;
-  };
 };
 
 export type Question = {
   id: number;
-  uid: number;
   displayId: string;
   title: string;
   level: Difficulty;
@@ -75,8 +61,6 @@ export type Question = {
   frequency: number;
   rate: MasteryRating;
   done: boolean;
-  hasNote: boolean;
-  commentCount: number;
   slug: string;
   expandedLink: boolean;
 };
@@ -84,13 +68,13 @@ export type Question = {
 export type QuestionProgress = {
   done?: boolean;
   mastery?: MasteryRating;
+  updatedAt?: string;
 };
 
 export type UserProgress = Record<string, QuestionProgress>;
 
 export type QuestionResponse = {
   count: number;
-  finished: [number, number, number];
   items: Question[];
 };
 
@@ -148,7 +132,6 @@ function normalizeQuestion(
 
   return {
     id: entity.id,
-    uid: entity.id,
     displayId: entity.displayId,
     title: entity.title,
     level: entity.level,
@@ -156,8 +139,6 @@ function normalizeQuestion(
     frequency: ranking.frequency,
     rate: itemProgress.mastery ?? 0,
     done: Boolean(itemProgress.done),
-    hasNote: false,
-    commentCount: ranking.commentCount,
     slug: entity.slug,
     expandedLink: entity.expandedLink,
   };
@@ -241,7 +222,7 @@ export async function fetchQuestions(
       if (!search) return true;
 
       const haystack =
-        `${item.displayId} ${item.title} ${item.uid}`.replace(".", "").toLocaleLowerCase();
+        `${item.displayId} ${item.title} ${item.id}`.replace(".", "").toLocaleLowerCase();
       return haystack.includes(search);
     });
 
@@ -250,7 +231,6 @@ export async function fetchQuestions(
 
   return {
     count: sortedItems.length,
-    finished: [0, 0, 0],
     items: sortedItems.slice(pageStart, pageStart + data.source.pageSize),
   };
 }
@@ -269,6 +249,34 @@ export async function fetchJobs() {
 
 export async function fetchTags() {
   return (await loadLocalData()).taxonomies.tags;
+}
+
+export async function fetchQuestionsByIds(
+  ids: Array<number | string>,
+  progress: UserProgress = {},
+) {
+  const data = await loadLocalData();
+  const overallRankingById = new Map(
+    data.indexes.overall.map((ranking) => [String(ranking.questionId), ranking]),
+  );
+
+  return ids
+    .map((id) => {
+      const key = String(id);
+      const entity = data.questions[key];
+      if (!entity) return null;
+
+      return normalizeQuestion(
+        entity,
+        overallRankingById.get(key) ?? {
+          questionId: entity.id,
+          frequency: 0,
+          time: data.generatedAt,
+        },
+        progress,
+      );
+    })
+    .filter((question): question is Question => Boolean(question));
 }
 
 export function buildQuestionUrl(question: Question) {
