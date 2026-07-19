@@ -47,6 +47,8 @@ import {
 } from './lib/algotop'
 import {
   hasQuestionNote,
+  isDefaultNoteContent,
+  makeDefaultNoteContent,
   makeNoteFilename,
   makeNoteMarkdown,
   readStoredNotes,
@@ -373,6 +375,7 @@ export function App() {
   const [activeNoteQuestion, setActiveNoteQuestion] = useState<Question | null>(
     null,
   )
+  const [activeNoteDraft, setActiveNoteDraft] = useState('')
   const theme = themePreference === 'system' ? systemTheme : themePreference
   const debouncedSearch = useDebouncedValue(filters.search, 350)
   const progressKey = useMemo(() => JSON.stringify(progress), [progress])
@@ -426,6 +429,7 @@ export function App() {
       if (event.key === 'Escape') {
         setIsAddDialogOpen(false)
         setActiveNoteQuestion(null)
+        setActiveNoteDraft('')
       }
     }
 
@@ -508,12 +512,31 @@ export function App() {
       return next
     })
   }, [])
-  const setQuestionNote = useCallback((id: number, content: string) => {
+  const openQuestionNote = useCallback(
+    (question: Question) => {
+      setActiveNoteQuestion(question)
+      setActiveNoteDraft(
+        notes[String(question.id)]?.content ?? makeDefaultNoteContent(question),
+      )
+    },
+    [notes],
+  )
+  const closeQuestionNote = useCallback(() => {
+    setActiveNoteQuestion(null)
+    setActiveNoteDraft('')
+  }, [])
+  const setQuestionNote = useCallback((question: Question, content: string) => {
     setNotes((current) => {
-      const key = String(id)
+      const key = String(question.id)
+      const shouldSave =
+        content.trim().length > 0 && !isDefaultNoteContent(question, content)
+
+      if (!shouldSave && !current[key]) return current
+      if (shouldSave && current[key]?.content === content) return current
+
       const next = { ...current }
 
-      if (content.length === 0) {
+      if (!shouldSave) {
         delete next[key]
       } else {
         next[key] = {
@@ -620,7 +643,7 @@ export function App() {
                   hasNote ? 'is-note-active' : ''
                 }`}
                 type='button'
-                onClick={() => setActiveNoteQuestion(row.original)}
+                onClick={() => openQuestionNote(row.original)}
                 aria-label={hasNote ? '编辑笔记' : '创建笔记'}
                 aria-pressed={hasNote}
                 title={hasNote ? '编辑笔记' : '创建笔记'}
@@ -632,7 +655,7 @@ export function App() {
         },
       },
     ],
-    [notes, setQuestionDone, setQuestionMastery],
+    [notes, openQuestionNote, setQuestionDone, setQuestionMastery],
   )
 
   const table = useReactTable({
@@ -1143,11 +1166,12 @@ export function App() {
             <NoteEditorDialog
               question={activeNoteQuestion}
               note={notes[String(activeNoteQuestion.id)]}
-              value={notes[String(activeNoteQuestion.id)]?.content ?? ''}
-              onChange={(value) =>
-                setQuestionNote(activeNoteQuestion.id, value)
-              }
-              onClose={() => setActiveNoteQuestion(null)}
+              value={activeNoteDraft}
+              onChange={(value) => {
+                setActiveNoteDraft(value)
+                setQuestionNote(activeNoteQuestion, value)
+              }}
+              onClose={closeQuestionNote}
               onExport={() => exportQuestionNote(activeNoteQuestion)}
             />
           </Suspense>

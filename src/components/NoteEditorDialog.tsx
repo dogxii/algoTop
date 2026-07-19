@@ -370,7 +370,7 @@ export function NoteEditorDialog({
   const [isCopying, setIsCopying] = useState(false);
   const [isExportingImage, setIsExportingImage] = useState(false);
   const [isFocusMode, setIsFocusMode] = useState(false);
-  const canExport = value.trim().length > 0;
+  const canExport = Boolean(note?.content.trim());
   const editorExtensions = useMemo(
     () => [markdown({ codeLanguages: CODE_LANGUAGES })],
     [],

@@ -13,6 +13,24 @@ export function hasQuestionNote(note?: QuestionNote) {
   return Boolean(note?.content.trim());
 }
 
+export function makeDefaultNoteContent(question: Question) {
+  const title = `${question.displayId}. ${question.title}`
+    .replace(/\[/g, "\\[")
+    .replace(/\]/g, "\\]");
+
+  return [
+    `## [${title}](${buildQuestionUrl(question)})`,
+    "",
+    "```",
+    "// 代码写在这里",
+    "```",
+  ].join("\n");
+}
+
+export function isDefaultNoteContent(question: Question, content: string) {
+  return content.trim() === makeDefaultNoteContent(question).trim();
+}
+
 export function readStoredNotes(): UserNotes {
   if (typeof window === "undefined") return {};
 
@@ -57,10 +75,13 @@ export function writeStoredNotes(notes: UserNotes) {
 }
 
 export function makeNoteMarkdown(question: Question, note: QuestionNote) {
+  const content = note.content.trim();
+  if (/^#{1,6}\s/.test(content)) return `${content}\n`;
+
   const lines = [
     `# ${question.displayId}. ${question.title}`,
     "",
-    note.content.trim(),
+    content,
     "",
     `[题目链接](${buildQuestionUrl(question)})`,
     "",
