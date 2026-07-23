@@ -1245,11 +1245,14 @@ a {
 }
 
 .note-code-editor .cm-content {
+  max-width: 100%;
   padding: 16px 0;
 }
 
 .note-code-editor .cm-line {
   padding: 0 18px;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .markdown-preview {

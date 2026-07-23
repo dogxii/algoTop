@@ -1,6 +1,7 @@
 import { useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
 import { markdown } from "@codemirror/lang-markdown";
 import { LanguageDescription } from "@codemirror/language";
+import { EditorView } from "@codemirror/view";
 import { githubDark } from "@uiw/codemirror-theme-github";
 import CodeMirror, { type ReactCodeMirrorRef } from "@uiw/react-codemirror";
 import hljs from "highlight.js/lib/core";
@@ -372,7 +373,7 @@ export function NoteEditorDialog({
   const [isFocusMode, setIsFocusMode] = useState(false);
   const canExport = Boolean(note?.content.trim());
   const editorExtensions = useMemo(
-    () => [markdown({ codeLanguages: CODE_LANGUAGES })],
+    () => [markdown({ codeLanguages: CODE_LANGUAGES }), EditorView.lineWrapping],
     [],
   );
 
